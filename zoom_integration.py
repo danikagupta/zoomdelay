@@ -9,6 +9,8 @@ import json
 
 from datetime import datetime, timedelta
 
+from skip_lists import skip_users_list
+
 
 ZOOM_TOKEN_ENDPOINT = "https://zoom.us/oauth/token"
 ZOOM_API_V2_BASE_URL = "https://api.zoom.us/v2/"
@@ -41,6 +43,32 @@ def create_authorized_header():
     headers["Content-Type"] = "application/json"
     return headers
 
+def get_meeting_details(meeting_id):
+    """
+    Fetches detailed meeting information, including the scheduled start time.
+    
+    Args:
+        meeting_id (int): Zoom Meeting ID.
+    
+    Returns:
+        Dict with scheduled start time, actual start time, and topic.
+    """
+    meeting_url = ZOOM_API_V2_BASE_URL + f"meetings/{meeting_id}"
+    zoom_auth_header = create_authorized_header()
+    response = requests.get(meeting_url, headers=zoom_auth_header)
+
+    if response.status_code == 200:
+        meeting = response.json()
+        return {
+            "id": meeting["id"],
+            "topic": meeting["topic"],
+            "scheduled_start_time": meeting.get("start_time", "N/A"),  # This is the scheduled start time
+            "actual_start_time": None  # Will be updated from Reports API
+        }
+    else:
+        st.sidebar.error(f"Error fetching scheduled start time for meeting {meeting_id}: {response.text}")
+        return None
+
 def get_meeting_ids_one_user(user_id,start_date, end_date):
     meetings_url = ZOOM_API_V2_BASE_URL+f"users/{user_id}/meetings?from={start_date}&to={end_date}"
     meetings_url = ZOOM_API_V2_BASE_URL+f"report/meetings?from={start_date}&to={end_date}&page_size=300"
@@ -50,7 +78,21 @@ def get_meeting_ids_one_user(user_id,start_date, end_date):
 
     if response.status_code == 200:
         meetings = response.json().get("meetings", [])
-        return [{"id": m["id"], "topic": m["topic"], "start_time": m["start_time"]} for m in meetings]
+        meeting_data = []
+
+        for m in meetings:
+            meeting_id = m["id"]
+            actual_start_time = m["start_time"]  # Actual start time from Reports API
+
+            # Fetch scheduled start time
+            meeting_details = get_meeting_details(meeting_id)
+            if meeting_details:
+                meeting_details["actual_start_time"] = actual_start_time
+                meeting_data.append(meeting_details)
+
+        return meeting_data
+
+        #return [{"id": m["id"], "topic": m["topic"], "start_time": m["start_time"]} for m in meetings]
     else:
         st.error(f"Error fetching meetings: {response.status_code} - {response.text} for {meetings_url=}")
         return []
@@ -69,9 +111,19 @@ def get_meeting_ids(start_date, end_date):
         new_list=get_meeting_ids_one_user(u,start_date, end_date)
         return_list.extend(new_list)
     return return_list
+
+def round_to_nearest_30_min(dt):
+    minutes = dt.minute
+    if minutes < 15:
+        rounded_dt = dt.replace(minute=0, second=0, microsecond=0)
+    elif minutes < 45:
+        rounded_dt = dt.replace(minute=30, second=0, microsecond=0)
+    else:
+        rounded_dt = (dt + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    return rounded_dt
     
 
-def get_attendee_details(meeting_id, topic, start_time,time_gap):
+def get_attendee_details(meeting_id, topic, start_time,time_gap,space2):
     """
     Fetches attendee details for a given meeting ID.
 
@@ -98,11 +150,15 @@ def get_attendee_details(meeting_id, topic, start_time,time_gap):
         filtered_participants = []
 
         for p in participants:
+            if p.get("name","Unknown") in skip_users_list:
+                space2.write(f"Skipping User: {p['name']}")
+                continue
             join_time_str = p.get("join_time", None)
             if join_time_str:
                 try:
                     join_time_dt = datetime.strptime(join_time_str, "%Y-%m-%dT%H:%M:%SZ")
-                    time_difference = (join_time_dt - start_time_dt).total_seconds()
+                    rounded_start_time_dt = round_to_nearest_30_min(start_time_dt) 
+                    time_difference = (join_time_dt - rounded_start_time_dt).total_seconds()
                     
                     if time_difference > time_gap:
                         filtered_participants.append({
