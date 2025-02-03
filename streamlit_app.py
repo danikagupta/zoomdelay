@@ -63,7 +63,8 @@ if st.sidebar.button("Get Zoom Meetings & Attendees"):
         with st.expander("Meetings"):
             st.dataframe(meetings)
     else:
-        st.write("Sorry - your key{st.session_state.get('key','')} is not correct")
+        st.write(f"Sorry - your key {st.session_state.get('key','')} is not correct")
+        meetings=None
 
     if meetings:
         all_attendee_data = []
